@@ -255,14 +255,9 @@
 
   <main class="stage-wrap">
     <div id="stage" class="stage">
+      <!-- 成品内容由共用构建流程按排版结果生成（标题、单/双栏或段落对齐正文、二维码）；
+           错误占位常驻，仅排版失败时显示，任何打印模式都不输出 -->
       <div id="label" class="label">
-        <div id="labelTitle" class="label-title"></div>
-        <div id="labelContent" class="label-content">
-          <div id="labelBody" class="label-col"></div>
-          <div id="labelBodyEn" class="label-col label-col-en"></div>
-        </div>
-        <div id="labelContentPaired" class="label-content paired" hidden></div>
-        <div id="labelQr" class="label-qr" hidden><canvas id="qrCanvas"></canvas></div>
         <div id="labelError" class="label-error" hidden></div>
       </div>
     </div>
