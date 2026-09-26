@@ -60,13 +60,6 @@
     status: document.getElementById('status'),
     stage: document.getElementById('stage'),
     label: document.getElementById('label'),
-    labelTitle: document.getElementById('labelTitle'),
-    labelContent: document.getElementById('labelContent'),
-    labelContentPaired: document.getElementById('labelContentPaired'),
-    labelBody: document.getElementById('labelBody'),
-    labelBodyEn: document.getElementById('labelBodyEn'),
-    labelQr: document.getElementById('labelQr'),
-    qrCanvas: document.getElementById('qrCanvas'),
     labelError: document.getElementById('labelError'),
     compare: document.getElementById('compare'),
     diffView: document.getElementById('diffView'),
@@ -532,16 +525,6 @@
     }
   }
 
-  // mode：'single' 单栏独立 / 'dual' 双栏各自独立 / 'paired' 双栏段落对齐
-  function setDualMode(mode) {
-    var paired = mode === 'paired';
-    var dual = mode !== 'single';
-    el.labelContent.classList.toggle('dual', dual);
-    el.labelContent.hidden = paired;
-    el.labelBodyEn.hidden = !dual || paired;
-    el.labelContentPaired.hidden = !paired;
-  }
-
   var lastGood = null;
   var currentQr = null; // 当前生效的二维码（LabelQR.encode 结果）；null 表示不生成
   var lastSheets = null; // 当前可用的同款拼版方案；null 表示拼版不可用
@@ -550,7 +533,8 @@
   var printMode = 'single'; // 本次打印输出：'single' 单张 / 'sheet' 同款拼版 / 'batch' 异款批量拼版
 
   // 把 QR 模块矩阵画到 canvas 上（白底黑块；显示尺寸由 CSS 固定为 18mm，
-  // 码图之外的空白由底部 22mm 预留区与内边距保证，预览与打印共用同一 canvas）
+  // 码图之外的空白由底部 22mm 预留区与内边距保证）；每张展签在构建时各自
+  // 新建 canvas 并调用本函数绘制同一矩阵，单张预览、同款与异款拼版码图一致
   function drawQr(canvas, modules) {
     var size = modules.length;
     var scale = 8; // 内部分辨率：每模块 8×8 像素，18mm 下约 460DPI
@@ -568,9 +552,15 @@
     }
   }
 
-  // 把一次成功的排版结果写入展签 DOM 与 CSS 变量（预览与打印共用此结果）
-  function applyResult(input, result) {
-    var s = el.label.style;
+  // ---------- 成品展签 DOM 共用构建 ----------
+  // 单张预览、同款拼版的每一份与异款拼版的每条记录都走同一构建流程，
+  // 输入完全相同（排版结果 result、物理尺寸取自 result/input、二维码 qr 模块），
+  // 保证三种打印方式的标题、单/双栏、段落对齐、换行、字号与物理尺寸一致，
+  // 后续改排版只需改这一处。
+
+  // 物理尺寸与字号等 CSS 变量：写入 label 节点自身（克隆与分页移动后仍跟随该节点）
+  function setLabelVars(label, input, result) {
+    var s = label.style;
     s.setProperty('--label-w', input.widthMm + 'mm');
     s.setProperty('--label-h', input.heightMm + 'mm');
     s.setProperty('--body-size', result.bodyPx + 'px');
@@ -580,33 +570,74 @@
         ? (result.bodyPx * TITLE_GAP_PX_FACTOR) + 'px'
         : '0px');
     s.setProperty('--para-gap', result.bodyPx * PARA_GAP_PX_FACTOR + 'px');
+  }
 
-    el.labelError.hidden = true;
+  function buildLabelTitleEl(result) {
+    var titleEl = document.createElement('div');
+    titleEl.className = 'label-title';
+    if (result.titlePlan) buildLines(titleEl, result.titlePlan);
+    return titleEl;
+  }
 
-    el.labelTitle.innerHTML = '';
-    if (result.titlePlan) {
-      buildLines(el.labelTitle, result.titlePlan);
-    }
-
-    el.labelBody.innerHTML = '';
-    el.labelBodyEn.innerHTML = '';
-    el.labelContentPaired.innerHTML = '';
-
+  // 正文区：单栏一列 / 双栏中英两列 / 段落对齐一个 grid 容器；
+  // 结构由排版结果决定，不依赖任何既有 DOM 的显隐状态
+  function buildLabelContentEl(result) {
     if (result.paired && result.zhPlan && result.enPlan) {
-      // 段落对齐成品：预览与打印共用同一 grid 布局
-      buildPairedLines(el.labelContentPaired, result.zhPlan, result.enPlan);
-    } else {
-      if (result.zhPlan) buildLines(el.labelBody, result.zhPlan);
-      if (result.enPlan) buildLines(el.labelBodyEn, result.enPlan);
+      var pairedEl = document.createElement('div');
+      pairedEl.className = 'label-content paired';
+      buildPairedLines(pairedEl, result.zhPlan, result.enPlan);
+      return pairedEl;
     }
+    var content = document.createElement('div');
+    content.className = 'label-content' + (result.dual ? ' dual' : '');
+    var zhCol = document.createElement('div');
+    zhCol.className = 'label-col';
+    if (result.zhPlan) buildLines(zhCol, result.zhPlan);
+    content.appendChild(zhCol);
+    if (result.dual) {
+      var enCol = document.createElement('div');
+      enCol.className = 'label-col label-col-en';
+      if (result.enPlan) buildLines(enCol, result.enPlan);
+      content.appendChild(enCol);
+    }
+    return content;
+  }
 
-    // 二维码：填写合法链接时固定在底部 22mm 预留区内居中显示
-    if (currentQr) {
-      drawQr(el.qrCanvas, currentQr.modules);
-      el.labelQr.hidden = false;
-    } else {
-      el.labelQr.hidden = true;
-    }
+  // 二维码盒：每张展签都新建并持有自己的 canvas，drawQr 按同一模块矩阵
+  // 各自绘制相同码图；canvas 位图属于节点自身，克隆或分页移动后保持不变
+  function buildLabelQrEl(qr) {
+    var qrBox = document.createElement('div');
+    qrBox.className = 'label-qr';
+    var canvas = document.createElement('canvas');
+    drawQr(canvas, qr.modules);
+    qrBox.appendChild(canvas);
+    return qrBox;
+  }
+
+  // 新建一张独立展签 DOM（不触碰任何已有节点）：同款拼版的每一份与
+  // 异款拼版每条通过记录都用它，需要几张就构建几张，各自持有独立二维码 canvas
+  function buildLabelElement(input, result, qr) {
+    var node = document.createElement('div');
+    node.className = 'label sheet-label';
+    setLabelVars(node, input, result);
+    node.appendChild(buildLabelTitleEl(result));
+    node.appendChild(buildLabelContentEl(result));
+    if (qr) node.appendChild(buildLabelQrEl(qr));
+    return node;
+  }
+
+  // 把一次成功的排版结果写入单张预览 #label：错误占位节点保留在容器内，
+  // 其余成品内容（CSS 变量、标题、正文、二维码）全部按共用流程重建，
+  // 与 buildLabelElement 的产物结构完全一致
+  function applyResult(input, result) {
+    el.labelError.hidden = true;
+    var old = el.label.querySelectorAll(
+      '.label-title, .label-content, .label-qr');
+    for (var i = 0; i < old.length; i++) old[i].remove();
+    setLabelVars(el.label, input, result);
+    el.label.appendChild(buildLabelTitleEl(result));
+    el.label.appendChild(buildLabelContentEl(result));
+    if (currentQr) el.label.appendChild(buildLabelQrEl(currentQr));
   }
 
   // 成功状态行文案
@@ -940,7 +971,6 @@
           ? '已开启：中英段落一一配对、同高起始'
           : '已关闭：两栏按各自内容独立排版');
 
-    setDualMode(input.paired ? 'paired' : (input.dual ? 'dual' : 'single'));
     currentQr = c.qr;
     el.qrHint.classList.toggle('err', !!c.qrError);
     if (c.qrError) {
@@ -1686,14 +1716,14 @@
       }));
   }
 
+  // 排版失败：单张预览继续显示现有错误占位（#labelError），并清掉上一次
+  // 由共用流程写入的成品内容；打印门禁已在调用方禁用，错误占位从不输出
   function showError(message) {
     el.labelError.textContent = message;
     el.labelError.hidden = false;
-    el.labelQr.hidden = true;
-    el.labelTitle.innerHTML = '';
-    el.labelBody.innerHTML = '';
-    el.labelBodyEn.innerHTML = '';
-    el.labelContentPaired.innerHTML = '';
+    var old = el.label.querySelectorAll(
+      '.label-title, .label-content, .label-qr');
+    for (var i = 0; i < old.length; i++) old[i].remove();
   }
 
   function setStatus(text, kind) {
@@ -1741,20 +1771,11 @@
     };
   }
 
-  // 克隆当前成品展签 DOM（含预断行、CSS 变量与段落对齐 grid）；
-  // canvas 位图不随 cloneNode 复制，二维码按同一模块矩阵重绘，保证各份码图一致
-  function cloneLabelForSheet() {
-    var clone = el.label.cloneNode(true);
-    clone.classList.add('sheet-label');
-    clone.style.transform = '';
-    clone.removeAttribute('id');
-    var withIds = clone.querySelectorAll('[id]');
-    for (var i = 0; i < withIds.length; i++) withIds[i].removeAttribute('id');
-    if (currentQr) {
-      var canvas = clone.querySelector('.label-qr canvas');
-      if (canvas) drawQr(canvas, currentQr.modules);
-    }
-    return clone;
+  // 同款拼版的每一份都由共用流程以 lastGood 的排版结果与尺寸、当前二维码
+  // 模块独立构建（与单张预览、异款记录同一产物）：每份持有自己的二维码
+  // canvas（同一模块矩阵绘制的相同码图），分页移动的只是这张独立成品节点
+  function buildSheetLabel() {
+    return buildLabelElement(lastGood.input, lastGood.result, currentQr);
   }
 
   // 逐页填充：每页 cols×rows 张，从左到右、从上到下；最后一页可能不满
@@ -1775,7 +1796,7 @@
       for (var i = 0; i < count; i++) {
         var col = i % plan.cols;
         var row = Math.floor(i / plan.cols);
-        var cell = cloneLabelForSheet();
+        var cell = buildSheetLabel();
         cell.style.left = (SHEET_MARGIN_MM + col * (labelW + SHEET_GAP_MM)) + 'mm';
         cell.style.top = (SHEET_MARGIN_MM + row * (labelH + SHEET_GAP_MM)) + 'mm';
         sheet.appendChild(cell);
@@ -1883,66 +1904,10 @@
   }
 
   // ---------- 异款批量拼版：校样通过的不同记录按原顺序拼入 A4 页 ----------
-  // 每条通过记录用自己的排版结果独立生成展签 DOM（预断行、段落对齐 grid 与
-  // 二维码码图各自保留），再按当前展签毫米尺寸、纸张方向、每边 10mm 留白与
-  // 4mm 间隔逐页排入 A4；失败记录只在校样结果中列出原因，不进入拼版。
-
-  // 由一次成功的排版结果构建独立展签 DOM（不触碰右侧单张预览）；
-  // 结构与 applyResult 写入 #label 的结果一致，二者需同步维护
-  function buildLabelElement(input, result, qr) {
-    var node = document.createElement('div');
-    node.className = 'label sheet-label';
-    var s = node.style;
-    s.setProperty('--label-w', input.widthMm + 'mm');
-    s.setProperty('--label-h', input.heightMm + 'mm');
-    s.setProperty('--body-size', result.bodyPx + 'px');
-    s.setProperty('--title-size', result.titlePx + 'px');
-    s.setProperty('--title-gap',
-      result.titlePlan && (result.zhPlan || result.enPlan)
-        ? (result.bodyPx * TITLE_GAP_PX_FACTOR) + 'px'
-        : '0px');
-    s.setProperty('--para-gap', result.bodyPx * PARA_GAP_PX_FACTOR + 'px');
-
-    if (result.titlePlan) {
-      var titleEl = document.createElement('div');
-      titleEl.className = 'label-title';
-      buildLines(titleEl, result.titlePlan);
-      node.appendChild(titleEl);
-    }
-
-    if (result.paired && result.zhPlan && result.enPlan) {
-      // 段落对齐成品：与单张预览同一 grid 布局
-      var pairedEl = document.createElement('div');
-      pairedEl.className = 'label-content paired';
-      buildPairedLines(pairedEl, result.zhPlan, result.enPlan);
-      node.appendChild(pairedEl);
-    } else {
-      var content = document.createElement('div');
-      content.className = 'label-content' + (result.dual ? ' dual' : '');
-      var zhCol = document.createElement('div');
-      zhCol.className = 'label-col';
-      if (result.zhPlan) buildLines(zhCol, result.zhPlan);
-      content.appendChild(zhCol);
-      if (result.dual) {
-        var enCol = document.createElement('div');
-        enCol.className = 'label-col label-col-en';
-        if (result.enPlan) buildLines(enCol, result.enPlan);
-        content.appendChild(enCol);
-      }
-      node.appendChild(content);
-    }
-
-    // 二维码：每张展签按同一模块矩阵绘制自己的码图
-    if (qr) {
-      var qrBox = document.createElement('div');
-      qrBox.className = 'label-qr';
-      var canvas = document.createElement('canvas');
-      drawQr(canvas, qr.modules);
-      qrBox.appendChild(canvas);
-      node.appendChild(qrBox);
-    }
-    return node;
-  }
+  // 每条通过记录直接复用共用流程 buildLabelElement 独立生成展签 DOM（预断行、
+  // 段落对齐 grid 与各自独立的二维码 canvas 都在构建时确定），再按当前展签
+  // 毫米尺寸、纸张方向、每边 10mm 留白与 4mm 间隔逐页排入 A4；失败记录只在
+  // 校样结果中列出原因，不进入拼版。
 
   // 校样完成后生成拼版素材：通过记录按 CSV 原顺序各自生成展签，失败记录不进入拼版
   function buildBatchImpose(c, rows) {

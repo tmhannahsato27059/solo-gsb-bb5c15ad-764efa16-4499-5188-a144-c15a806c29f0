@@ -476,7 +476,6 @@ button:disabled { background: #aaa5; cursor: not-allowed; }
 /* 段落对齐模式：一个容器内按对依次放置中、英段落，
    grid 每行两列即一对段落；两栏各自独立断行、顶部对齐，
    行与行之间沿用现有段间距（--para-gap），自动行高取同对两者较高者。 */
-.label-content.paired[hidden] { display: none; }
 .label-content.paired {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
